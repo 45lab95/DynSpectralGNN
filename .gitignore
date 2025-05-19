@@ -1,0 +1,25 @@
+# Checkpoints and large data
+checkpoints/
+data/
+bitcoin_otc_pyg_raw/
+
+config/
+
+# Logs
+*.log
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE/Editor specific
+.idea/
+.vscode/
+
+# result plot
+plots/
+
+# dataset test
+testotc.py
+
