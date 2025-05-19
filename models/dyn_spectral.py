@@ -21,8 +21,9 @@ class DynSpectralBackbone(BaseDynamicBackbone):
                  combination_dropout_ch1: float,
                  combination_dropout_ch2: float,
                  combination_dropout_anchor: float,
-                 contrastive_temperature: float = 0.1,
                  lstm_hidden_dim: int, 
+                 contrastive_temperature: float = 0.1,
+                 
                  lstm_layers: int = 1,
                  lstm_dropout: float = 0.0,
                  contrastive_loss_interval: int = 1 
@@ -89,11 +90,11 @@ class DynSpectralBackbone(BaseDynamicBackbone):
 
         # --- 迭代时间步 ---
         for t in range(num_snapshots):
-            initial_features_t = snapshots_data[t]['features'].to(self.device)
+            initial_features_t = snapshots_data[t]['initial_features'].to(self.device)
             p_matrix_t = snapshots_data[t]['p_matrix'].to(self.device)
-            precomputed_homophily_bases_t = compute_homophily_bases(
-                p_matrix_t, initial_features_t, self.K
-            )
+            precomputed_homophily_bases_t = [                                      
+                b.to(self.device) for b in snapshots_data[t]['homophily_bases']
+            ]
             z1_t, z2_t, contrastive_loss_t = self.contrastive_head(
                 precomputed_homophily_bases=precomputed_homophily_bases_t,
                 p_matrix=p_matrix_t, 

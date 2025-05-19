@@ -25,22 +25,28 @@ from utils.plot_utils import plot_training_curves
 def train_one_epoch(model: DynSpectral,
                     optimizer: torch.optim.Optimizer,
                     criterion: nn.Module,
-                    train_snapshots: List[Dict[str, torch.Tensor]], # 包含 ch1 和 ch2 特征
+                    train_snapshots: List[Dict[str, torch.Tensor]],
                     train_target_edges: List[Dict[str, torch.Tensor]],
-                    device: torch.device) -> float:
+                    device: torch.device,
+                    lambda_contrastive: float # <--- 添加这个参数的声明
+                    ) -> Tuple[float, float, float]:
+    """执行一个训练轮次 (包含对比损失)"""
     model.train()
     optimizer.zero_grad()
-    total_loss = 0.0
+    total_epoch_loss = 0.0
+    total_main_task_loss = 0.0
+    total_contrastive_loss_val = 0.0
     num_processed_steps = 0
 
     for t in tqdm(range(len(train_snapshots)), desc="Training Steps", leave=False, disable=True):
         model_input_snapshots = []
         for i in range(t + 1):
-            snapshot_data = {
-                'unibasis_features_ch1': train_snapshots[i]['unibasis_features_ch1'],
-                'unibasis_features_ch2': train_snapshots[i]['unibasis_features_ch2'],
+            snapshot_data_for_model = {
+                'initial_features': train_snapshots[i]['initial_features'].to(device),
+                'p_matrix': train_snapshots[i]['p_matrix'].to(device),
+                'homophily_bases': [b.to(device) for b in train_snapshots[i]['homophily_bases']]
             }
-            model_input_snapshots.append(snapshot_data)
+            model_input_snapshots.append(snapshot_data_for_model)
 
         target_edges_t_plus_1 = train_target_edges[t]
         target_pos_edges = target_edges_t_plus_1['pos_edge_index'].to(device)
@@ -49,24 +55,34 @@ def train_one_epoch(model: DynSpectral,
         if target_pos_edges.numel() == 0 or target_neg_edges.numel() == 0: continue
 
         predict_edge_index = torch.cat([target_pos_edges, target_neg_edges], dim=1)
-        logits = model(model_input_snapshots, target_edges=predict_edge_index)
+        task_logits, contrastive_loss = model(model_input_snapshots, target_edges=predict_edge_index)
 
         pos_labels = torch.ones(target_pos_edges.size(1), device=device)
         neg_labels = torch.zeros(target_neg_edges.size(1), device=device)
         labels = torch.cat([pos_labels, neg_labels])
 
-        loss = criterion(logits, labels)
-        loss.backward()
-        total_loss += loss.item()
+        main_task_loss = criterion(task_logits, labels)
+        # 使用传入的 lambda_contrastive
+        current_step_total_loss = main_task_loss + lambda_contrastive * contrastive_loss
+
+        current_step_total_loss.backward()
+        total_epoch_loss += current_step_total_loss.item()
+        total_main_task_loss += main_task_loss.item()
+        total_contrastive_loss_val += contrastive_loss.item()
         num_processed_steps += 1
 
     if num_processed_steps > 0:
         optimizer.step()
         optimizer.zero_grad()
-        avg_loss = total_loss / num_processed_steps
+        avg_total_loss = total_epoch_loss / num_processed_steps
+        avg_main_task_loss = total_main_task_loss / num_processed_steps
+        avg_contrastive_loss = total_contrastive_loss_val / num_processed_steps
     else:
-        avg_loss = 0.0
-    return avg_loss
+        avg_total_loss = 0.0
+        avg_main_task_loss = 0.0
+        avg_contrastive_loss = 0.0
+
+    return avg_total_loss, avg_main_task_loss, avg_contrastive_loss
 
 @torch.no_grad()
 def evaluate(model: DynSpectral,
@@ -77,17 +93,17 @@ def evaluate(model: DynSpectral,
     all_logits = []
     all_labels = []
 
-    model_input_snapshots = []
+    model_input_snapshots_for_eval = []
     for i in range(len(input_snapshots)):
-         snapshot_data = {
-            'unibasis_features_ch1': input_snapshots[i]['unibasis_features_ch1'],
-            'unibasis_features_ch2': input_snapshots[i]['unibasis_features_ch2'],
+         snapshot_data_for_model = {
+            'initial_features': input_snapshots[i]['initial_features'], # 保持在 CPU
+            'p_matrix': input_snapshots[i]['p_matrix'],                 # 保持在 CPU
+            'homophily_bases': input_snapshots[i]['homophily_bases']   # 保持在 CPU
          }
-         model_input_snapshots.append(snapshot_data)
+         model_input_snapshots.append(snapshot_data_for_model)
 
     for t in tqdm(range(len(target_edges_list)), desc="Evaluating Steps", leave=False, disable=True):
         target_edges_t = target_edges_list[t]
-        # ... (与之前 evaluate 相同)
         target_pos_edges = target_edges_t['pos_edge_index'].to(device)
         target_neg_edges = target_edges_t['neg_edge_index'].to(device)
         if target_pos_edges.numel() == 0 or target_neg_edges.numel() == 0: continue
@@ -114,9 +130,9 @@ def parse_arguments():
                         help='要使用的数据集名称')
     parser.add_argument('--bitcoin_otc_root', type=str, default='./bitcoin_otc_pyg_raw',
                         help='BitcoinOTC PyG 数据集根目录')
-    parser.add_argument('--uc_irvine_path', type=str, default='data/uc_irvine_messages/out.opsahl-ucsocial',
+    parser.add_argument('--uc_irvine_path', type=str, default='data/uci/out.opsahl-ucsocial',
                         help='UC Irvine messages 原始数据文件路径')
-    parser.add_argument('--enron_path', type=str, default='data/enron_email/enron_edges.tsv', # 假设路径
+    parser.add_argument('--enron_path', type=str, default='data/enron_email/enron_edges.tsv', 
                         help='Enron email 原始数据文件路径')
     parser.add_argument('--edge_window_size', type=int, default=10,
                         help='BitcoinOTC 边窗口大小 (对 UC Irvine/Enron 无效，它们使用 time_window_days)')
@@ -140,7 +156,7 @@ def parse_arguments():
     parser.add_argument('--lambda_contrastive', type=float, default=0.1, help='对比损失的权重')
     parser.add_argument('--contrastive_loss_interval', type=int, default=1, help='每隔多少时间步计算对比损失')
     # LSTM (Backbone) 参数
-    parser.add_argument('--lstm_hidden', type=int, default=128, help='单个 LSTM 隐藏层维度')
+    parser.add_argument('--lstm_hidden', type=int, default=64, help='单个 LSTM 隐藏层维度')
     parser.add_argument('--lstm_layers', type=int, default=1, help='LSTM 层数')
     parser.add_argument('--lstm_dropout', type=float, default=0.0, help='LSTM 层间 dropout')
     # LinkPredictorHead (Task Head) 参数
@@ -149,6 +165,8 @@ def parse_arguments():
     parser.add_argument('--epochs', type=int, default=200, help='训练轮数')
     parser.add_argument('--lr_comb1', type=float, default=0.005, help='通道1 Combination 层学习率')
     parser.add_argument('--lr_comb2', type=float, default=0.005, help='通道2 Combination 层学习率')
+    parser.add_argument('--lr_comb_anchor', type=float, default=0.005, help='锚点 Combination 层学习率')
+    parser.add_argument('--wd_comb_anchor', type=float, default=0.0, help='锚点 Combination 层权重衰减')
     parser.add_argument('--lr_lstm1', type=float, default=0.01, help='通道1 LSTM 层学习率')
     parser.add_argument('--lr_lstm2', type=float, default=0.01, help='通道2 LSTM 层学习率')
     parser.add_argument('--lr_pred_head', type=float, default=0.01, help='预测头学习率')
@@ -188,17 +206,22 @@ def main():
             # K, tau, h_hats 不再由 data_loader 直接使用，而是传递给模型
         )
     elif args.dataset_name.lower() == 'uci':
-        snapshots_data, num_nodes, initial_feature_dim_actual = load_uc_irvine_message_data(
-            data_path=args.uc_irvine_path,
-            feature_generator=generate_node_features,
-        )
+        snapshots_data, num_nodes, initial_feature_dim_actual = load_uci(
+        data_path=args.uc_irvine_path,
+        K_unibasis=args.K, # 传递 K
+        feature_generator=generate_node_features
+    )
     elif args.dataset_name.lower() == 'enron':
-        snapshots_data, num_nodes, initial_feature_dim_actual = load_event_data_by_time_window(
+        snapshots_data, num_nodes, initial_feature_dim_actual = load_enron_email_data(
             data_path=args.enron_path, time_window_days=args.time_window_days,
             feature_generator=generate_node_features, dataset_name="Enron Email"
         )
     else:
         raise ValueError(f"未知或不支持的数据集名称: {args.dataset_name}")
+    
+    if args.initial_feature_dim != initial_feature_dim_actual: # args.initial_feature_dim 是从命令行读取的
+        print(f"警告: 参数指定的 initial_feature_dim ({args.initial_feature_dim}) 与数据加载器返回的 ({initial_feature_dim_actual}) 不符。将使用后者。")
+    final_initial_feature_dim = initial_feature_dim_actual
     
     num_time_steps = len(snapshots_data); 
     train_steps_idx, val_steps_idx, test_steps_idx = get_dynamic_data_splits(
@@ -220,11 +243,20 @@ def main():
     print("\n--- 初始化模型 ---")
     model = DynSpectral(
         device=device,
-        unibasis_base_feature_dim=feature_dim_F,
+        # --- 修改这里：使用正确的参数名 ---
+        initial_feature_dim=final_initial_feature_dim, # 将 unibasis_base_feature_dim 改为 initial_feature_dim
+        # --- 修改结束 ---
         K=args.K,
-        combination_dropout_ch1=args.combination_dropout_ch1, # 传递 ch1 dropout
-        combination_dropout_ch2=args.combination_dropout_ch2, # 传递 ch2 dropout
-        lstm_hidden_dim=args.lstm_hidden, # 单个 LSTM 的隐藏维度
+        tau=args.tau,
+        h_hat_ch1=args.h_hat1, h_hat_ch1_prime=args.h_hat1_prime,
+        h_hat_ch2=args.h_hat2, h_hat_ch2_prime=args.h_hat2_prime,
+        h_hat_anchor=args.h_hat_anchor,
+        combination_dropout_ch1=args.combination_dropout_ch1,
+        combination_dropout_ch2=args.combination_dropout_ch2,
+        combination_dropout_anchor=args.combination_dropout_anchor,
+        contrastive_temperature=args.contrastive_temperature,
+        contrastive_loss_interval=args.contrastive_loss_interval,
+        lstm_hidden_dim=args.lstm_hidden,
         lstm_layers=args.lstm_layers,
         lstm_dropout=args.lstm_dropout,
         link_pred_hidden_dim=args.link_pred_hidden

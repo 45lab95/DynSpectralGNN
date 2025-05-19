@@ -21,24 +21,23 @@ class DynSpectral(nn.Module):
     """
     def __init__(self,
                  device: torch.device,
-                 # --- Backbone (DynSpectralBackbone) 参数 ---
-                 initial_feature_dim: int, # 初始节点特征 X_t 的维度
+                 initial_feature_dim: int,
                  K: int,
                  tau: float,
-                 # --- 对比学习头特定参数 (传递给 Backbone) ---
-                 h_hat_ch1: float, h_hat_ch1_prime: float,
-                 h_hat_ch2: float, h_hat_ch2_prime: float,
+                 h_hat_ch1: float,
+                 h_hat_ch1_prime: float,
+                 h_hat_ch2: float,
+                 h_hat_ch2_prime: float,
                  h_hat_anchor: float,
                  combination_dropout_ch1: float,
                  combination_dropout_ch2: float,
                  combination_dropout_anchor: float,
+                 lstm_hidden_dim: int,
+
                  contrastive_temperature: float = 0.1,
-                 contrastive_loss_interval: int = 1, # 新增
-                 # --- 主 LSTM 通道参数 (传递给 Backbone) ---
-                 lstm_hidden_dim: int, # 单个 LSTM 的隐藏维度
+                 contrastive_loss_interval: int = 1,
                  lstm_layers: int = 1,
-                 lstm_dropout: float = 0.0,
-                 # --- Task Head (LinkPredictorHead) 参数 ---
+                 lstm_dropout: float = 0.0, # <--- 确保这里有逗号
                  link_pred_hidden_dim: Optional[int] = None
                  ):
         super().__init__()
