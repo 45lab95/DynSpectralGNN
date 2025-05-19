@@ -110,7 +110,7 @@ def parse_arguments():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Dual Channel Dynamic Spectral GNN with UniBasis')
     # 数据集参数
-    parser.add_argument('--dataset_name', type=str, default='bitcoin_otc', choices=['bitcoin_otc', 'uc_irvine', 'enron'], # 添加 enron
+    parser.add_argument('--dataset_name', type=str, default='bitcoin_otc', choices=['bitcoin_otc', 'uci', 'enron'], # 添加 enron
                         help='要使用的数据集名称')
     parser.add_argument('--bitcoin_otc_root', type=str, default='./bitcoin_otc_pyg_raw',
                         help='BitcoinOTC PyG 数据集根目录')
@@ -124,13 +124,21 @@ def parse_arguments():
                         help='事件型数据集（如UC Irvine, Enron）聚合快照的时间窗口天数')
 
 
-    # UniBasis (Backbone) 参数
+    parser.add_argument('--initial_feature_dim', type=int, default=1, help='初始节点特征维度 (例如，度数为1)') # 需要这个
     parser.add_argument('--K', type=int, default=10, help='UniBasis 多项式阶数')
     parser.add_argument('--tau', type=float, default=0.5, help='UniBasis 同配/异配混合系数 τ')
-    parser.add_argument('--h_hat1', type=float, default=0.3, help='通道1 全局估计同配率 ĥ1 (偏异配)')
-    parser.add_argument('--h_hat2', type=float, default=0.7, help='通道2 全局估计同配率 ĥ2 (偏同配)')
-    parser.add_argument('--combination_dropout_ch1', type=float, default=0.3, help='通道1 Combination 层 dropout')
-    parser.add_argument('--combination_dropout_ch2', type=float, default=0.3, help='通道2 Combination 层 dropout')
+    # --- 新增/修改：对比学习相关 h_hat 和 dropout ---
+    parser.add_argument('--h_hat1', type=float, default=0.2, help='通道1 目标同配率 ĥ1 (偏异配)')
+    parser.add_argument('--h_hat1_prime', type=float, default=0.1, help='通道1 对比正样本同配率 ĥ1\' (更异配)')
+    parser.add_argument('--h_hat2', type=float, default=0.8, help='通道2 目标同配率 ĥ2 (偏同配)')
+    parser.add_argument('--h_hat2_prime', type=float, default=0.9, help='通道2 对比正样本同配率 ĥ2\' (更同配)')
+    parser.add_argument('--h_hat_anchor', type=float, default=0.5, help='锚点通道同配率 ĥ_anchor')
+    parser.add_argument('--combination_dropout_ch1', type=float, default=0.3, help='通道1/1\' Combination dropout')
+    parser.add_argument('--combination_dropout_ch2', type=float, default=0.3, help='通道2/2\' Combination dropout')
+    parser.add_argument('--combination_dropout_anchor', type=float, default=0.3, help='锚点 Combination dropout')
+    parser.add_argument('--contrastive_temperature', type=float, default=0.1, help='InfoNCE 温度参数')
+    parser.add_argument('--lambda_contrastive', type=float, default=0.1, help='对比损失的权重')
+    parser.add_argument('--contrastive_loss_interval', type=int, default=1, help='每隔多少时间步计算对比损失')
     # LSTM (Backbone) 参数
     parser.add_argument('--lstm_hidden', type=int, default=128, help='单个 LSTM 隐藏层维度')
     parser.add_argument('--lstm_layers', type=int, default=1, help='LSTM 层数')
@@ -171,28 +179,23 @@ def main():
     os.makedirs(args.save_dir, exist_ok=True); model_save_path = os.path.join(args.save_dir, args.model_name)
 
 
-    # --- 加载和准备数据 (传入两个 h_hat) ---
     print("\n--- 加载数据 ---")
-    if args.dataset_name.lower() == 'bitotc':
-        snapshots_data, num_nodes, feature_dim_F = load_bitcoin_otc_data(
+    # feature_dim_F 现在代表初始 X_t 的维度
+    if args.dataset_name.lower() == 'bitcoin_otc':
+        snapshots_data, num_nodes, initial_feature_dim_actual = load_bitcoin_otc_data(
             root=args.bitcoin_otc_root, edge_window_size=args.edge_window_size,
-            feature_generator=generate_node_features, K=args.K, tau=args.tau,
-            h_hat_channel1=args.h_hat1, h_hat_channel2=args.h_hat2 # 传递两个 h_hat
+            feature_generator=generate_node_features,
+            # K, tau, h_hats 不再由 data_loader 直接使用，而是传递给模型
         )
     elif args.dataset_name.lower() == 'uci':
-        snapshots_data, num_nodes, feature_dim_F = load_uci(
-            data_path=args.uc_irvine_path, feature_generator=generate_node_features,
-            K=args.K, tau=args.tau,
-            h_hat_channel1=args.h_hat1, h_hat_channel2=args.h_hat2 # 传递两个 h_hat
-        )
-    elif args.dataset_name.lower() == 'enron': # 新增 Enron
-        snapshots_data, num_nodes, feature_dim_F = load_enron(
-            data_path=args.enron_path, # 使用 enron_path 参数
+        snapshots_data, num_nodes, initial_feature_dim_actual = load_uc_irvine_message_data(
+            data_path=args.uc_irvine_path,
             feature_generator=generate_node_features,
-            K=args.K,
-            tau=args.tau,
-            h_hat_channel1=args.h_hat1,
-            h_hat_channel2=args.h_hat2
+        )
+    elif args.dataset_name.lower() == 'enron':
+        snapshots_data, num_nodes, initial_feature_dim_actual = load_event_data_by_time_window(
+            data_path=args.enron_path, time_window_days=args.time_window_days,
+            feature_generator=generate_node_features, dataset_name="Enron Email"
         )
     else:
         raise ValueError(f"未知或不支持的数据集名称: {args.dataset_name}")
@@ -231,16 +234,14 @@ def main():
 
     # --- 设置优化器 (使用更细致的参数组) ---
     optimizer = optim.Adam([
-        {'params': model.backbone.combination1.parameters(),
-         'lr': args.lr_comb1, 'weight_decay': args.wd_comb1},
-        {'params': model.backbone.combination2.parameters(),
-         'lr': args.lr_comb2, 'weight_decay': args.wd_comb2},
-        {'params': model.backbone.lstm_encoder1.parameters(),
-         'lr': args.lr_lstm1, 'weight_decay': args.wd_lstm1},
-        {'params': model.backbone.lstm_encoder2.parameters(),
-         'lr': args.lr_lstm2, 'weight_decay': args.wd_lstm2},
-        {'params': model.task_head.parameters(),
-         'lr': args.lr_pred_head, 'weight_decay': args.wd_pred_head}
+        {'params': model.backbone.contrastive_head.view_gen_ch1.parameters(), 'lr': args.lr_comb1, 'weight_decay': args.wd_comb1},
+        {'params': model.backbone.contrastive_head.view_gen_ch1_prime.parameters(), 'lr': args.lr_comb1, 'weight_decay': args.wd_comb1}, # 可以共享LR/WD
+        {'params': model.backbone.contrastive_head.view_gen_ch2.parameters(), 'lr': args.lr_comb2, 'weight_decay': args.wd_comb2},
+        {'params': model.backbone.contrastive_head.view_gen_ch2_prime.parameters(), 'lr': args.lr_comb2, 'weight_decay': args.wd_comb2},
+        {'params': model.backbone.contrastive_head.view_gen_anchor.parameters(), 'lr': args.lr_comb_anchor, 'weight_decay': args.wd_comb_anchor}, # 为 anchor 单独设置
+        {'params': model.backbone.lstm_encoder1.parameters(), 'lr': args.lr_lstm1, 'weight_decay': args.wd_lstm1},
+        {'params': model.backbone.lstm_encoder2.parameters(), 'lr': args.lr_lstm2, 'weight_decay': args.wd_lstm2},
+        {'params': model.task_head.parameters(), 'lr': args.lr_pred_head, 'weight_decay': args.wd_pred_head}
     ])
     print("\n优化器已设置参数组。")
 
@@ -254,13 +255,19 @@ def main():
 
     for epoch in range(args.epochs):
         epoch_start_time = time.time()
-        loss = train_one_epoch(model, optimizer, criterion, train_snapshots, train_target_edges, device)
+        # loss = train_one_epoch(model, optimizer, criterion, train_snapshots, train_target_edges, device)
+        total_loss_epoch, main_loss_epoch, cl_loss_epoch = train_one_epoch(
+            model, optimizer, criterion,
+            train_snapshots, train_target_edges, device,
+            args.lambda_contrastive # 传递对比损失权重
+        )
         val_auc, val_ap, val_f1 = evaluate(model, val_input_snapshots, val_target_edges, device)
-        epoch_time = time.time() - epoch_start_time
+        epoch_time = time.time() - epoch_start_time 
 
-        print(f"Epoch {epoch+1}/{args.epochs} | Time: {epoch_time:.2f}s | Avg Loss: {loss:.4f} | "
+        print(f"Epoch {epoch+1}/{args.epochs} | Time: {epoch_time:.2f}s | "
+              f"Total Loss: {total_loss_epoch:.4f} (Main: {main_loss_epoch:.4f}, CL: {cl_loss_epoch:.4f}) | "
               f"Val Avg AUC: {val_auc:.4f} | Val Avg AP: {val_ap:.4f} | Val Avg F1: {val_f1:.4f}")
-        training_history['epoch'].append(epoch + 1); training_history['train_loss'].append(loss); training_history['val_auc'].append(val_auc); training_history['val_ap'].append(val_ap);training_history['val_f1'].append(val_f1)
+        training_history['epoch'].append(epoch + 1); training_history['train_loss'].append(total_loss_epoch);training_history['main_loss'].append(main_loss_epoch);training_history['cl_loss'].append(cl_loss_epoch); training_history['val_auc'].append(val_auc); training_history['val_ap'].append(val_ap);training_history['val_f1'].append(val_f1)
 
         if val_auc > best_val_auc:
             best_val_auc = val_auc
