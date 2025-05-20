@@ -87,9 +87,13 @@ class DynSpectralBackbone(BaseDynamicBackbone):
         lstm_inputs_ch2_seq = []
         accumulated_contrastive_loss = torch.tensor(0.0, device=self.device)
         num_contrastive_calcs = 0
-
+        
         # --- 迭代时间步 ---
         for t in range(num_snapshots):
+
+            # print(f"  Backbone t={t}: input snapshot device - initial_features: {snapshots_data[t]['initial_features'].device}, p_matrix: {snapshots_data[t]['p_matrix'].device}, homophily_bases[0]: {snapshots_data[t]['homophily_bases'][0].device if snapshots_data[t]['homophily_bases'] else 'N/A'}")
+
+
             initial_features_t = snapshots_data[t]['initial_features'].to(self.device)
             p_matrix_t = snapshots_data[t]['p_matrix'].to(self.device)
             precomputed_homophily_bases_t = [                                      
@@ -100,6 +104,9 @@ class DynSpectralBackbone(BaseDynamicBackbone):
                 p_matrix=p_matrix_t, 
                 initial_features=initial_features_t
             )
+            
+            # print(f"  Backbone t={t}: after .to(device) - initial_features: {initial_features_t.device}, p_matrix: {p_matrix_t.device}, homophily_bases[0]: {precomputed_homophily_bases_t[0].device if precomputed_homophily_bases_t else 'N/A'}")
+
 
             lstm_inputs_ch1_seq.append(z1_t)
             lstm_inputs_ch2_seq.append(z2_t)

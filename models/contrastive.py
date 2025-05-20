@@ -18,11 +18,9 @@ class UniBasisViewGenerator(nn.Module):
     使用特定的 h_hat 和 Combination 层生成一个 UniBasis 视图的表示。
     """
     def __init__(self,
-                 base_feature_dim: int, # 单个基向量的维度 F
-                 K: int,                # UniBasis 阶数
+                 base_feature_dim: int, 
+                 K: int,
                  combination_dropout: float,
-                 # h_hat 将在 forward 中传入，因为每个 ViewGenerator 可能对应不同的 h_hat
-                 # tau 也将在 forward 中传入，如果希望每个视图的 tau 也可配置
                  ):
         super().__init__()
         self.base_feature_dim = base_feature_dim

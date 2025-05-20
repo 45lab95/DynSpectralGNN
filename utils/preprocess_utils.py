@@ -55,6 +55,7 @@ def compute_homophily_bases(p_matrix: torch.Tensor,
     # 确保所有操作在同一设备
     device = features.device
     p_matrix = p_matrix.to(device) # 确保 p_matrix 也在正确设备
+    # print(f"    [HomophilyBases] Input features device: {device}, p_matrix device: {p_matrix.device}")
 
     homophily_bases_list = [features.clone()] # HM_0 = X_t, 使用 clone 避免修改原始 features
     hm_k = features.clone()
@@ -80,7 +81,8 @@ def compute_unibasis_for_snapshot(
     num_nodes, base_feature_dim = initial_features.shape
     device = initial_features.device
     p_matrix = p_matrix.to(device) # 确保 p_matrix 在正确设备
-
+    
+    # print(f"      [UniBasisSnap] Input initial_features device: {device}, p_matrix device: {p_matrix.device}")
     cosval = math.cos(math.pi * (1.0 - h_hat) / 2.0)
 
     # --- 获取或计算同配基 ---
