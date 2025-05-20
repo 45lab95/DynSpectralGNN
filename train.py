@@ -137,7 +137,7 @@ def parse_arguments():
 
 
     parser.add_argument('--initial_feature_dim', type=int, default=1, help='初始节点特征维度 (例如，度数为1)') # 需要这个
-    parser.add_argument('--K', type=int, default=5, help='UniBasis 多项式阶数')
+    parser.add_argument('--K', type=int, default=10, help='UniBasis 多项式阶数')
     parser.add_argument('--tau', type=float, default=0.5, help='UniBasis 同配/异配混合系数 τ')
     # --- 新增/修改：对比学习相关 h_hat 和 dropout ---
     parser.add_argument('--h_hat1', type=float, default=0.2, help='通道1 目标同配率 ĥ1 (偏异配)')
